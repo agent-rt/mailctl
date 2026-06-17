@@ -12,6 +12,17 @@ pub enum Provider {
     Hotmail,
 }
 
+/// 各 provider 的 OAuth2 端点与差异参数。
+pub struct OAuthSpec {
+    pub authorize_url: &'static str,
+    pub token_url: &'static str,
+    pub scopes: &'static str,
+    /// 追加到 authorize 查询串的差异参数（含前导 `&`）。
+    pub extra_auth_params: &'static str,
+    /// token 请求是否需要 client_secret（Google Desktop 客户端需要）。
+    pub needs_client_secret: bool,
+}
+
 impl Provider {
     /// IMAP over implicit TLS (993)。
     pub const fn imap_host(self) -> &'static str {
@@ -46,6 +57,27 @@ impl Provider {
         match self {
             Provider::Gmail => "[Gmail]/Drafts",
             Provider::Hotmail => "Drafts",
+        }
+    }
+
+    /// OAuth2 端点与差异参数。
+    pub const fn oauth_spec(self) -> OAuthSpec {
+        match self {
+            Provider::Gmail => OAuthSpec {
+                authorize_url: "https://accounts.google.com/o/oauth2/v2/auth",
+                token_url: "https://oauth2.googleapis.com/token",
+                scopes: "https://mail.google.com/",
+                // offline + consent：拿到 refresh_token 的前提。
+                extra_auth_params: "&access_type=offline&prompt=consent",
+                needs_client_secret: true,
+            },
+            Provider::Hotmail => OAuthSpec {
+                authorize_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+                token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+                scopes: "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
+                extra_auth_params: "&response_mode=query",
+                needs_client_secret: false,
+            },
         }
     }
 }

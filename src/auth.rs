@@ -22,6 +22,10 @@ fn refresh_key(email: &str) -> String {
     format!("{email}#refresh")
 }
 
+fn oauth_secret_key(email: &str) -> String {
+    format!("{email}#oauth-secret")
+}
+
 /// 账户配了 secret_ref 且环境变量存在时返回其值（即「env 后端生效」）。
 fn env_secret(account: &Account) -> Option<String> {
     account
@@ -54,6 +58,16 @@ pub fn load_refresh_token(account: &Account) -> Result<String> {
 pub fn store_refresh_token(email: &str, token: &str) -> Result<()> {
     entry(&refresh_key(email))?.set_password(token)?;
     Ok(())
+}
+
+/// OAuth client_secret（Gmail Desktop 客户端需要；Google 视其为非机密但必传）。存钥匙串。
+pub fn store_oauth_secret(email: &str, secret: &str) -> Result<()> {
+    entry(&oauth_secret_key(email))?.set_password(secret)?;
+    Ok(())
+}
+
+pub fn load_oauth_secret(account: &Account) -> Result<String> {
+    Ok(entry(&oauth_secret_key(&account.email))?.get_password()?)
 }
 
 /// 轮换后的 refresh_token 持久化。env 模式下无法写回 secretctl，跳过——
@@ -95,7 +109,11 @@ pub fn load_access_cache(email: &str) -> Result<String> {
 
 /// 注销时清理全部凭据（钥匙串主密钥 + 缓存文件），任一不存在都不算失败（幂等）。
 pub fn delete_all(email: &str) -> Result<()> {
-    for key in [email.to_string(), refresh_key(email)] {
+    for key in [
+        email.to_string(),
+        refresh_key(email),
+        oauth_secret_key(email),
+    ] {
         if let Ok(e) = entry(&key) {
             let _ = e.delete_credential();
         }

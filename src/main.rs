@@ -229,38 +229,56 @@ fn run_auth(action: AuthAction) -> Result<()> {
             email,
             password,
             client_id,
+            client_secret,
             secret_ref,
         } => {
             let provider = Provider::from_str(&provider)?;
             let stored_client_id = match provider {
                 Provider::Gmail => {
-                    // secret_ref 模式：主密钥在 secretctl，运行时经 env 注入，不写 keychain。
-                    if secret_ref.is_none() {
-                        let password = match password {
-                            Some(p) => p,
-                            None => rpassword::prompt_password("App Password: ")?,
-                        };
-                        auth::store_password(&email, &password)?;
+                    if let Some(cid) = client_id {
+                        // Gmail OAuth（Workspace 禁用 App Password 时用）：需 client_secret。
+                        let secret = client_secret.ok_or_else(|| {
+                            Error::OAuth(
+                                "Gmail OAuth 需要 --client-secret（Google Cloud Desktop 客户端密钥）"
+                                    .to_string(),
+                            )
+                        })?;
+                        let refresh =
+                            oauth::interactive_login(provider, &cid, Some(&secret), &email)?;
+                        auth::store_refresh_token(&email, &refresh)?;
+                        auth::store_oauth_secret(&email, &secret)?;
+                        Some(cid)
+                    } else {
+                        // App Password。secret_ref 模式下不写 keychain（运行时 env 注入）。
+                        if secret_ref.is_none() {
+                            let password = match password {
+                                Some(p) => p,
+                                None => rpassword::prompt_password("App Password: ")?,
+                            };
+                            auth::store_password(&email, &password)?;
+                        }
+                        None
                     }
-                    None
                 }
                 Provider::Hotmail => {
-                    let client_id = client_id.ok_or_else(|| {
+                    let cid = client_id.ok_or_else(|| {
                         Error::OAuth(
-                            "Hotmail 需要 --client-id（Azure 应用注册的 public client id）".to_string(),
+                            "Hotmail 需要 --client-id（Azure 应用注册的 public client id）"
+                                .to_string(),
                         )
                     })?;
-                    let refresh_token = oauth::interactive_login(&client_id)?;
-                    // refresh_token 存 keychain（每小时刷新时读一次）；access 缓存走 0600 文件。
-                    auth::store_refresh_token(&email, &refresh_token)?;
-                    Some(client_id)
+                    let refresh = oauth::interactive_login(provider, &cid, None, &email)?;
+                    auth::store_refresh_token(&email, &refresh)?;
+                    Some(cid)
                 }
             };
 
-            let mode = if secret_ref.is_some() {
-                "secretctl/env"
+            let mode = if stored_client_id.is_some() {
+                "OAuth"
+            } else if secret_ref.is_some() {
+                "App Password (secretctl/env)"
             } else {
-                "keychain"
+                "App Password (keychain)"
             };
             let mut config = Config::load()?;
             config.upsert(Account {
@@ -275,7 +293,7 @@ fn run_auth(action: AuthAction) -> Result<()> {
                 ok: true,
                 action: "login",
                 uid: None,
-                detail: format!("已保存账户 {email}（{provider:?}，主密钥后端: {mode}）"),
+                detail: format!("已保存账户 {email}（{provider:?}，{mode}）"),
             })
         }
         AuthAction::List => {

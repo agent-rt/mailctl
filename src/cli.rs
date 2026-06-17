@@ -146,9 +146,13 @@ pub enum AuthAction {
         /// Gmail App Password（非交互；省略则提示输入）。
         #[arg(long)]
         password: Option<String>,
-        /// Hotmail OAuth 的 Azure public client id。
+        /// OAuth client id。Hotmail：Azure public client；Gmail：Google Cloud Desktop 客户端。
+        /// 提供它即走 OAuth（Gmail 不提供则走 App Password）。
         #[arg(long)]
         client_id: Option<String>,
+        /// OAuth client secret。仅 Gmail OAuth 需要（Google Desktop 客户端）。
+        #[arg(long)]
+        client_secret: Option<String>,
         /// secretctl 密钥名。设置后主密钥走 secretctl/env，不写 keychain。
         /// Gmail：免 --password；运行时用 `secretctl exec --only <ref> -- mailctl ...`。
         #[arg(long)]

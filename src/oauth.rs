@@ -1,10 +1,12 @@
-//! Microsoft identity platform OAuth2（Hotmail/Outlook.com）。
-//! 采用 authorization-code + PKCE + loopback 回调，public client 免 secret。
-//! refresh_token 落钥匙串；每次连接前用 refresh grant 换取短期 access_token。
+//! OAuth2（Gmail 与 Hotmail/Outlook.com）。
+//! authorization-code + PKCE + loopback 回调。端点/scope 由 `Provider::oauth_spec()` 提供：
+//! Gmail（Desktop 客户端，需 client_secret）、Hotmail（public client，免 secret）。
+//! refresh_token 落钥匙串；每次连接前用 refresh grant 换短期 access_token（带本地缓存）。
 
 use crate::auth;
 use crate::config::Account;
 use crate::error::{Error, Result};
+use crate::provider::Provider;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,11 +16,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// access_token 视为「即将过期」的安全余量（秒），避免临界点用到失效令牌。
 const EXPIRY_MARGIN_SECS: u64 = 60;
-
-const AUTHORIZE_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
-const TOKEN_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
-/// IMAP/SMTP 委托权限 + offline_access（换 refresh_token）。
-const SCOPES: &str = "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send";
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
@@ -36,7 +33,14 @@ struct CachedToken {
 }
 
 /// 交互式登录：本地起回调服务 → 浏览器授权 → 换取 token。返回 refresh_token。
-pub fn interactive_login(client_id: &str) -> Result<String> {
+/// `email` 用作 login_hint 预填账户；`client_secret` 仅 Gmail 需要。
+pub fn interactive_login(
+    provider: Provider,
+    client_id: &str,
+    client_secret: Option<&str>,
+    email: &str,
+) -> Result<String> {
+    let spec = provider.oauth_spec();
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://localhost:{port}");
@@ -46,14 +50,17 @@ pub fn interactive_login(client_id: &str) -> Result<String> {
     let state = generate_verifier()?; // 复用随机源做 CSRF state
 
     let auth_url = format!(
-        "{AUTHORIZE_URL}?client_id={cid}&response_type=code&redirect_uri={redir}\
-         &response_mode=query&scope={scope}&state={state}\
-         &code_challenge={challenge}&code_challenge_method=S256",
+        "{authorize}?client_id={cid}&response_type=code&redirect_uri={redir}\
+         &scope={scope}&state={state}&login_hint={hint}\
+         &code_challenge={challenge}&code_challenge_method=S256{extra}",
+        authorize = spec.authorize_url,
         cid = enc(client_id),
         redir = enc(&redirect_uri),
-        scope = enc(SCOPES),
+        scope = enc(spec.scopes),
         state = enc(&state),
+        hint = enc(email),
         challenge = enc(&challenge),
+        extra = spec.extra_auth_params,
     );
 
     // 尽力自动打开浏览器；失败则提示用户手动访问。
@@ -65,26 +72,33 @@ pub fn interactive_login(client_id: &str) -> Result<String> {
         return Err(Error::OAuth("state 不匹配，疑似 CSRF，已中止".to_string()));
     }
 
-    let resp = post_token(&[
+    let mut form = vec![
         ("client_id", client_id),
         ("grant_type", "authorization_code"),
-        ("code", &code),
-        ("redirect_uri", &redirect_uri),
-        ("code_verifier", &verifier),
-        ("scope", SCOPES),
-    ])?;
+        ("code", code.as_str()),
+        ("redirect_uri", redirect_uri.as_str()),
+        ("code_verifier", verifier.as_str()),
+        ("scope", spec.scopes),
+    ];
+    if let Some(secret) = client_secret {
+        form.push(("client_secret", secret));
+    }
 
+    let resp = post_token(spec.token_url, &form)?;
     resp.refresh_token
-        .ok_or_else(|| Error::OAuth("授权响应缺少 refresh_token（请确认 scope 含 offline_access）".to_string()))
+        .ok_or_else(|| Error::OAuth("授权响应缺少 refresh_token（Gmail 需 access_type=offline+prompt=consent；MS 需 offline_access scope）".to_string()))
 }
 
 /// 取可用 access_token。优先复用钥匙串里未过期的缓存（省去每次刷新的网络往返）；
 /// 否则用 refresh_token 刷新，回写新缓存，并在服务端轮换 refresh_token 时一并更新。
 pub fn access_token_for(account: &Account) -> Result<String> {
-    let client_id = account
-        .client_id
-        .as_deref()
-        .ok_or_else(|| Error::OAuth(format!("账户 {} 缺少 client_id，请重新 login", account.email)))?;
+    let spec = account.provider.oauth_spec();
+    let client_id = account.client_id.as_deref().ok_or_else(|| {
+        Error::OAuth(format!(
+            "账户 {} 缺少 client_id，请重新 login",
+            account.email
+        ))
+    })?;
 
     // 1. 缓存命中（且距过期还有余量）则直接用。
     if let Some(token) = cached_access_token(&account.email)? {
@@ -93,12 +107,21 @@ pub fn access_token_for(account: &Account) -> Result<String> {
 
     // 2. 刷新。
     let refresh = auth::load_refresh_token(account)?;
-    let resp = post_token(&[
+    let secret = if spec.needs_client_secret {
+        Some(auth::load_oauth_secret(account)?)
+    } else {
+        None
+    };
+    let mut form = vec![
         ("client_id", client_id),
         ("grant_type", "refresh_token"),
-        ("refresh_token", &refresh),
-        ("scope", SCOPES),
-    ])?;
+        ("refresh_token", refresh.as_str()),
+        ("scope", spec.scopes),
+    ];
+    if let Some(s) = &secret {
+        form.push(("client_secret", s.as_str()));
+    }
+    let resp = post_token(spec.token_url, &form)?;
 
     if let Some(new_refresh) = resp.refresh_token
         && new_refresh != refresh
@@ -140,17 +163,15 @@ fn now_unix() -> Result<u64> {
         .map_err(|e| Error::OAuth(format!("系统时间异常: {e}")))
 }
 
-fn post_token(form: &[(&str, &str)]) -> Result<TokenResponse> {
-    let response = ureq::post(TOKEN_URL)
-        .send_form(form)
-        .map_err(|e| match e {
-            // 4xx 时 body 含 error_description，透传给用户便于排查。
-            ureq::Error::Status(_, resp) => Error::OAuth(
-                resp.into_string()
-                    .unwrap_or_else(|_| "token 端点返回错误".to_string()),
-            ),
-            other => Error::Http(other.to_string()),
-        })?;
+fn post_token(token_url: &str, form: &[(&str, &str)]) -> Result<TokenResponse> {
+    let response = ureq::post(token_url).send_form(form).map_err(|e| match e {
+        // 4xx 时 body 含 error_description，透传给用户便于排查。
+        ureq::Error::Status(_, resp) => Error::OAuth(
+            resp.into_string()
+                .unwrap_or_else(|_| "token 端点返回错误".to_string()),
+        ),
+        other => Error::Http(other.to_string()),
+    })?;
     response
         .into_json::<TokenResponse>()
         .map_err(|e| Error::OAuth(format!("解析 token 响应失败: {e}")))

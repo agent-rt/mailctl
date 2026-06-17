@@ -6,7 +6,6 @@ use crate::config::Account;
 use crate::error::{Error, Result};
 use crate::model::{FolderInfo, MessageBody, MessageMeta};
 use crate::oauth;
-use crate::provider::Provider;
 use imap::types::{Flag, NameAttribute};
 use imap_proto::types::Address;
 use native_tls::TlsStream;
@@ -34,31 +33,28 @@ pub struct ImapClient {
 }
 
 impl ImapClient {
-    /// 建立 TLS 会话，按 provider 选认证方式：
-    /// Gmail → App Password LOGIN；Hotmail → OAuth2 XOAUTH2。
+    /// 建立 TLS 会话。认证方式由是否配置 `client_id` 决定（与 provider 无关）：
+    /// 有 client_id → OAuth2 XOAUTH2（Gmail 或 Hotmail）；无 → App Password LOGIN（Gmail）。
     pub fn connect(account: &Account) -> Result<Self> {
         let host = account.provider.imap_host();
         let port = account.provider.imap_port();
         let tls = native_tls::TlsConnector::builder().build()?;
         let client = imap::connect((host, port), host, &tls)?;
 
-        let session = match account.provider {
-            Provider::Gmail => {
-                let password = auth::load_password(account)?;
-                client
-                    .login(&account.email, &password)
-                    .map_err(|(e, _client)| Error::Imap(e))?
-            }
-            Provider::Hotmail => {
-                let access_token = oauth::access_token_for(account)?;
-                let authenticator = XOAuth2 {
-                    user: account.email.clone(),
-                    access_token,
-                };
-                client
-                    .authenticate("XOAUTH2", &authenticator)
-                    .map_err(|(e, _client)| Error::Imap(e))?
-            }
+        let session = if account.client_id.is_some() {
+            let access_token = oauth::access_token_for(account)?;
+            let authenticator = XOAuth2 {
+                user: account.email.clone(),
+                access_token,
+            };
+            client
+                .authenticate("XOAUTH2", &authenticator)
+                .map_err(|(e, _client)| Error::Imap(e))?
+        } else {
+            let password = auth::load_password(account)?;
+            client
+                .login(&account.email, &password)
+                .map_err(|(e, _client)| Error::Imap(e))?
         };
         Ok(Self { session })
     }
@@ -106,7 +102,11 @@ impl ImapClient {
         if uids.is_empty() {
             return Ok(Vec::new());
         }
-        let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let set = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         // 连 HEADER 一起 PEEK（不设 \Seen），用于 List-Unsubscribe 检测。
         let fetches = self
             .session
@@ -155,7 +155,11 @@ impl ImapClient {
         expect: Option<u32>,
     ) -> Result<u32> {
         let uidvalidity = self.select_checked(source, expect)?;
-        let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let set = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         self.session.uid_mv(&set, wire(dest))?;
         Ok(uidvalidity)
     }
@@ -165,7 +169,9 @@ impl ImapClient {
     /// 是否标记已读由 Agent 显式 `flag --read` 决定。
     pub fn read(&mut self, folder: &str, uid: u32) -> Result<MessageBody> {
         self.session.select(wire(folder))?;
-        let fetches = self.session.uid_fetch(uid.to_string(), "(UID BODY.PEEK[])")?;
+        let fetches = self
+            .session
+            .uid_fetch(uid.to_string(), "(UID BODY.PEEK[])")?;
         let fetch = fetches.iter().next().ok_or(Error::MessageNotFound(uid))?;
         let raw = fetch.body().ok_or(Error::MessageNotFound(uid))?;
         crate::mime::parse(uid, raw)
@@ -213,7 +219,11 @@ impl ImapClient {
         expect: Option<u32>,
     ) -> Result<()> {
         self.select_checked(folder, expect)?;
-        let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let set = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         // 用原始命令 + `.SILENT`：X-GM-LABELS 的 FETCH 回显 imap_proto 解析不了，
         // SILENT 抑制回显，只留 tagged OK。
         for label in add {
@@ -325,7 +335,8 @@ mod tests {
     #[test]
     fn detects_bulk_via_list_unsubscribe() {
         use super::detect_bulk;
-        let marketing = b"From: shop@x.com\r\nList-Unsubscribe: <https://x.com/u>\r\nSubject: sale\r\n";
+        let marketing =
+            b"From: shop@x.com\r\nList-Unsubscribe: <https://x.com/u>\r\nSubject: sale\r\n";
         let personal = b"From: alice@x.com\r\nTo: bob@y.com\r\nSubject: lunch?\r\n";
         // 字段名大小写不敏感
         let lower_case = b"from: a@b\r\nlist-unsubscribe: <mailto:u@b>\r\n";

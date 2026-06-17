@@ -34,7 +34,7 @@ Most mail tools are designed for humans. Agents need different things:
 ## Features
 
 - 📥 **Gmail & Outlook/Hotmail** over IMAP (read) + SMTP (send).
-- 🔑 **Modern auth**: Gmail App Password, or OAuth2 (Authorization Code + PKCE) for Outlook/Hotmail with `XOAUTH2`. Short-lived access tokens are cached locally so commands rarely hit the network just to authenticate.
+- 🔑 **Modern auth**: Gmail via App Password *or* OAuth2, Outlook/Hotmail via OAuth2 — OAuth uses Authorization Code + PKCE with `XOAUTH2`. Short-lived access tokens are cached locally so commands rarely hit the network just to authenticate.
 - 🔎 **Search** with a small query DSL (`is:unread`, `from:`, `to:`, `subject:`) translated to IMAP `SEARCH`.
 - 🌏 **Correct internationalization**: RFC 2047 encoded-word subjects and modified-UTF-7 folder names are decoded properly (CJK, emoji, etc.).
 - 🏷️ **Organize**: move between folders, add/remove Gmail labels, list folders/labels.
@@ -59,7 +59,7 @@ $ cp target/release/mailctl ~/.local/bin/   # or wherever you keep binaries
 
 ## Quick start
 
-### Gmail (App Password)
+### Gmail — App Password
 
 Gmail requires 2-Step Verification, then an [App Password](https://myaccount.google.com/apppasswords). IMAP must be enabled in Gmail settings.
 
@@ -69,7 +69,17 @@ App Password: ****************
 $ mailctl search "is:unread" --limit 10
 ```
 
-> **Workspace note:** some organizations disable App Passwords. If so, App Password login won't be available and you'll need OAuth (see roadmap — Gmail OAuth is planned).
+### Gmail — OAuth2 (for Workspace)
+
+Many Google Workspace organizations disable App Passwords. In that case, use OAuth with a [Google Cloud Desktop client](#google-cloud-oauth-client-for-gmail) (`client_id` + `client_secret`):
+
+```console
+$ mailctl auth login --provider gmail --email you@workspace.com \
+    --client-id <your-client-id> --client-secret <your-client-secret>
+# A browser opens; sign in and consent. The refresh token is stored in the Keychain.
+```
+
+> mailctl picks the auth method by whether `--client-id` is given: with it → OAuth, without it → App Password.
 
 ### Outlook / Hotmail (OAuth2)
 
@@ -167,6 +177,18 @@ Registering an app is free and needs no Azure subscription.
 
 API permissions usually need no pre-configuration for personal accounts: the IMAP/SMTP scopes are requested dynamically and consented at sign-in.
 
+## Google Cloud OAuth client (for Gmail)
+
+For Gmail OAuth (e.g. Workspace accounts without App Passwords):
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create (or pick) a project.
+2. Enable the **Gmail API** for the project.
+3. Configure the **OAuth consent screen** (External or Internal). Add the scope `https://mail.google.com/`. While in *Testing*, add your address as a test user.
+4. **Credentials → Create credentials → OAuth client ID → Application type: Desktop app.** This yields a **client id** and **client secret** (Google treats installed-app secrets as non-confidential, but they are required in the token exchange).
+5. Use them as `--client-id` / `--client-secret`. The client secret is stored in the Keychain, never in config.
+
+> Workspace admins can also restrict which OAuth apps may access mail; you may need an admin to approve the app for your domain.
+
 ## Architecture
 
 ```
@@ -176,7 +198,7 @@ src/
 ├── provider.rs     Gmail / Hotmail endpoints (enum — illegal states unrepresentable)
 ├── config.rs       per-account metadata (~/.config); no secrets on disk
 ├── auth.rs         credential backends: Keychain or env (secret manager)
-├── oauth.rs        Microsoft OAuth2 (Authorization Code + PKCE, loopback), token cache
+├── oauth.rs        OAuth2 for Gmail & Outlook (Authorization Code + PKCE, loopback), token cache
 ├── imap_client.rs  IMAP: search/read/flag/move/label/trash/folders + XOAUTH2
 ├── smtp_client.rs  SMTP send/draft (App Password or XOAUTH2)
 ├── mime.rs         MIME parsing (mail-parser)
@@ -188,7 +210,6 @@ Design choices: synchronous I/O (a short-lived CLI gains nothing from an async r
 
 ## Roadmap
 
-- [ ] Gmail OAuth2 (for Workspace accounts where App Passwords are disabled)
 - [ ] Attachment download
 - [ ] HTML and attachment composition for `send`
 - [ ] Transient-error retries

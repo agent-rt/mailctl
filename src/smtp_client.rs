@@ -5,7 +5,6 @@ use crate::auth;
 use crate::config::Account;
 use crate::error::Result;
 use crate::oauth;
-use crate::provider::Provider;
 use lettre::message::Message;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
@@ -24,24 +23,21 @@ pub fn build(account: &Account, to: &[String], subject: &str, body: &str) -> Res
         .body(body.to_string())?)
 }
 
-/// 经 SMTP submission（587 STARTTLS）发送。Gmail 用 App Password (LOGIN/PLAIN)，
-/// Hotmail 用 OAuth2 access_token (XOAUTH2)。
+/// 经 SMTP submission（587 STARTTLS）发送。认证方式由是否配置 client_id 决定：
+/// 有 → OAuth2 access_token (XOAUTH2)；无 → App Password (LOGIN/PLAIN)。
 pub fn send(account: &Account, message: &Message) -> Result<()> {
     let builder = SmtpTransport::relay(account.provider.smtp_host())?;
-    let mailer = match account.provider {
-        Provider::Gmail => {
-            let password = auth::load_password(account)?;
-            builder
-                .credentials(Credentials::new(account.email.clone(), password))
-                .build()
-        }
-        Provider::Hotmail => {
-            let access_token = oauth::access_token_for(account)?;
-            builder
-                .credentials(Credentials::new(account.email.clone(), access_token))
-                .authentication(vec![Mechanism::Xoauth2])
-                .build()
-        }
+    let mailer = if account.client_id.is_some() {
+        let access_token = oauth::access_token_for(account)?;
+        builder
+            .credentials(Credentials::new(account.email.clone(), access_token))
+            .authentication(vec![Mechanism::Xoauth2])
+            .build()
+    } else {
+        let password = auth::load_password(account)?;
+        builder
+            .credentials(Credentials::new(account.email.clone(), password))
+            .build()
     };
     mailer.send(message)?;
     Ok(())
