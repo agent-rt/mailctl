@@ -71,3 +71,65 @@ pub fn print_json<T: Serialize>(value: &T) -> crate::error::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
+
+// ---- TSV 输出（search 默认，省 token）----
+// 约定：`#` 开头行为元数据（key=value，tab 分隔）；随后一行列头；其余为数据行。
+// 字段内的 tab/换行被替换为空格，保证每封一行。
+
+fn tsv_clean(s: &str) -> String {
+    s.replace(['\t', '\n', '\r'], " ")
+}
+
+fn meta_row(m: &MessageMeta) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        m.uid,
+        tsv_clean(&m.from),
+        tsv_clean(&m.subject),
+        tsv_clean(m.date.as_deref().unwrap_or("")),
+        m.unread,
+        m.size.map(|s| s.to_string()).unwrap_or_default(),
+        m.is_bulk,
+    )
+}
+
+const META_HEADER: &str = "uid\tfrom\tsubject\tdate\tunread\tsize\tis_bulk";
+
+/// 单文件夹 search 的 TSV。`meta` 为 `#` 注释行的 key=value 对（如 folder/uidvalidity）。
+pub fn print_tsv(meta: &[(&str, String)], messages: &[MessageMeta]) -> crate::error::Result<()> {
+    if !meta.is_empty() {
+        let kv: Vec<String> = meta
+            .iter()
+            .map(|(k, v)| format!("{k}={}", tsv_clean(v)))
+            .collect();
+        println!("# {}", kv.join("\t"));
+    }
+    println!("{META_HEADER}");
+    for m in messages {
+        println!("{}", meta_row(m));
+    }
+    Ok(())
+}
+
+/// `--all-accounts` 的 TSV：扁平化，首列 `account`；每账户的 uidvalidity/error 走 `#` 注释行。
+pub fn print_tsv_accounts(folder: &str, accounts: &[AccountSearch]) -> crate::error::Result<()> {
+    println!("# folder={}", tsv_clean(folder));
+    for a in accounts {
+        if let Some(e) = &a.error {
+            println!(
+                "# account={}\terror={}",
+                tsv_clean(&a.account),
+                tsv_clean(e)
+            );
+        } else if let Some(uv) = a.uidvalidity {
+            println!("# account={}\tuidvalidity={uv}", tsv_clean(&a.account));
+        }
+    }
+    println!("account\t{META_HEADER}");
+    for a in accounts {
+        for m in &a.messages {
+            println!("{}\t{}", tsv_clean(&a.account), meta_row(m));
+        }
+    }
+    Ok(())
+}

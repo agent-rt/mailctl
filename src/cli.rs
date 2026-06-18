@@ -1,7 +1,16 @@
 //! clap 命令树。所有命令默认输出 JSON，面向 Agent 编排。
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+
+/// search 的输出格式。
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// TSV（默认，省 token；read/分组的 error 行仍按约定走 `#` 注释）。
+    Tsv,
+    /// JSON。
+    Json,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -50,6 +59,9 @@ pub enum Command {
         /// 跨所有账户搜索（实时），结果按账户分组。覆盖 --account，且不能与 --cached/--fts 同用。
         #[arg(long)]
         all_accounts: bool,
+        /// 输出格式：tsv（默认，省 token）或 json。
+        #[arg(long, value_enum, default_value_t = Format::Tsv)]
+        format: Format,
     },
 
     /// 读取单封邮件正文。

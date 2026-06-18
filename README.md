@@ -10,15 +10,12 @@ mailctl is built to be driven by AI agents and scripts, not humans clicking arou
 
 ```console
 $ mailctl search "is:unread from:boss" --limit 5
-{
-  "folder": "INBOX",
-  "uidvalidity": 14,
-  "messages": [
-    { "uid": 4821, "from": "Boss <boss@example.com>", "subject": "Q3 review",
-      "date": "Wed, 17 Jun 2026 08:14:11 +0000", "unread": true, "size": 20848, "is_bulk": false }
-  ]
-}
+# folder=INBOX	uidvalidity=14
+uid	from	subject	date	unread	size	is_bulk
+4821	Boss <boss@example.com>	Q3 review	Wed, 17 Jun 2026 08:14:11 +0000	true	20848	false
 ```
+
+`search` defaults to compact TSV (one line per message — far fewer tokens than JSON). Add `--format json` for JSON. `read`, errors, and write confirmations are always JSON.
 
 ---
 
@@ -27,7 +24,7 @@ $ mailctl search "is:unread from:boss" --limit 5
 Most mail tools are designed for humans. Agents need different things:
 
 - **Token-lean by default.** `search` returns metadata only — no bodies. Fetch a full message with `read` only when needed. Agents don't pay for tens of thousands of tokens of email they won't use.
-- **Structured everything.** Stable JSON schemas, stable exit codes, machine-readable errors on `stderr`. Easy to compose across multiple steps.
+- **Structured everything.** `search` defaults to compact TSV (lowest token cost); `read`/errors/confirmations are JSON; `--format json` switches search too. Stable schemas, stable exit codes, machine-readable errors on `stderr`.
 - **Non-interactive.** No browser pop-ups or keychain prompts mid-run. Authenticate once; the agent runs unattended afterwards.
 - **Safe by construction.** Deletion is never permanent, batch operations preview before they act, every change is reversible and logged, and stale message IDs are rejected. See [Safety model](#safety-model).
 
@@ -104,7 +101,7 @@ All commands accept `--account <email>` (defaults to the default account) and `-
 | `auth list` | List configured accounts. |
 | `auth logout <email>` | Remove an account and wipe its stored credentials. |
 | `folders` | List folders/labels (`{name, selectable}`). |
-| `search [query] [--limit N] [--expect-uidvalidity N] [--cached] [--fts] [--all-accounts]` | Search; metadata only (token-lean). Real-time by default; `--cached` reads the local store; `--fts` runs local full-text search (both need `sync`); `--all-accounts` searches every account, grouped by account. |
+| `search [query] [--limit N] [--expect-uidvalidity N] [--cached] [--fts] [--all-accounts] [--format json\|tsv]` | Search; metadata only (token-lean). TSV by default, `--format json` for JSON. Real-time by default; `--cached` reads the local store; `--fts` runs local full-text search (both need `sync`); `--all-accounts` searches every account. |
 | `sync` | Incrementally pull a folder's metadata into the local cache (for `search --cached` / `--fts`). |
 | `read <uid>` | Read one message's body (`BODY.PEEK` — does **not** mark as read; cached locally). |
 | `cache info` / `cache clear` | Inspect or clear the local body cache. |

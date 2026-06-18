@@ -16,11 +16,14 @@ mod retry;
 mod smtp_client;
 
 use clap::Parser;
-use cli::{AuthAction, CacheAction, Cli, Command};
+use cli::{AuthAction, CacheAction, Cli, Command, Format};
 use config::{Account, Config};
 use error::{Error, Result};
 use imap_client::ImapClient;
-use model::{AccountSearch, ActionResult, MessageMeta, SearchResult, print_json};
+use model::{
+    AccountSearch, ActionResult, MessageMeta, SearchResult, print_json, print_tsv,
+    print_tsv_accounts,
+};
 use provider::Provider;
 use serde_json::json;
 use std::str::FromStr;
@@ -44,6 +47,7 @@ fn run(cli: Cli) -> Result<()> {
             cached,
             fts,
             all_accounts,
+            format,
         } => {
             let config = Config::load()?;
             if all_accounts {
@@ -84,7 +88,12 @@ fn run(cli: Cli) -> Result<()> {
                     };
                     results.push(entry);
                 }
-                return print_json(&json!({ "folder": cli.folder, "accounts": results }));
+                return match format {
+                    Format::Tsv => print_tsv_accounts(&cli.folder, &results),
+                    Format::Json => {
+                        print_json(&json!({ "folder": cli.folder, "accounts": results }))
+                    }
+                };
             }
             let account = config.resolve(cli.account.as_deref())?;
             if fts {
@@ -99,13 +108,24 @@ fn run(cli: Cli) -> Result<()> {
                         ))
                     })?;
                 let messages = cache::fts_search(&conn, &account.email, &cli.folder, &q, limit)?;
-                print_json(&json!({
-                    "folder": cli.folder,
-                    "uidvalidity": uidvalidity,
-                    "fts": true,
-                    "last_sync": last_sync,
-                    "messages": messages,
-                }))
+                match format {
+                    Format::Tsv => print_tsv(
+                        &[
+                            ("folder", cli.folder.clone()),
+                            ("uidvalidity", uidvalidity.to_string()),
+                            ("fts", "true".to_string()),
+                            ("last_sync", last_sync.to_string()),
+                        ],
+                        &messages,
+                    ),
+                    Format::Json => print_json(&json!({
+                        "folder": cli.folder,
+                        "uidvalidity": uidvalidity,
+                        "fts": true,
+                        "last_sync": last_sync,
+                        "messages": messages,
+                    })),
+                }
             } else if cached {
                 // 零网络：读本地缓存，Rust 侧过滤。需先 sync；flag 可能陈旧。
                 let conn = cache::open()?;
@@ -122,24 +142,44 @@ fn run(cli: Cli) -> Result<()> {
                         .filter(|m| cached_match(m, query.as_deref()))
                         .take(limit)
                         .collect();
-                print_json(&json!({
-                    "folder": cli.folder,
-                    "uidvalidity": uidvalidity,
-                    "cached": true,
-                    "last_sync": last_sync,
-                    "messages": messages,
-                }))
+                match format {
+                    Format::Tsv => print_tsv(
+                        &[
+                            ("folder", cli.folder.clone()),
+                            ("uidvalidity", uidvalidity.to_string()),
+                            ("cached", "true".to_string()),
+                            ("last_sync", last_sync.to_string()),
+                        ],
+                        &messages,
+                    ),
+                    Format::Json => print_json(&json!({
+                        "folder": cli.folder,
+                        "uidvalidity": uidvalidity,
+                        "cached": true,
+                        "last_sync": last_sync,
+                        "messages": messages,
+                    })),
+                }
             } else {
                 let criteria = translate_query(query.as_deref())?;
                 let mut client = ImapClient::connect(account)?;
                 let (uidvalidity, messages) =
                     client.search(&cli.folder, &criteria, limit, expect_uidvalidity)?;
                 client.logout()?;
-                print_json(&SearchResult {
-                    folder: cli.folder,
-                    uidvalidity,
-                    messages,
-                })
+                match format {
+                    Format::Tsv => print_tsv(
+                        &[
+                            ("folder", cli.folder.clone()),
+                            ("uidvalidity", uidvalidity.to_string()),
+                        ],
+                        &messages,
+                    ),
+                    Format::Json => print_json(&SearchResult {
+                        folder: cli.folder,
+                        uidvalidity,
+                        messages,
+                    }),
+                }
             }
         }
         Command::Read { uid } => {
