@@ -1,6 +1,6 @@
 [package]
 name = "mailctl"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "An agent-first command-line email client for Gmail and Outlook/Hotmail"
 license = "MIT"
