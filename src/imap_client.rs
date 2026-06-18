@@ -82,7 +82,7 @@ impl ImapClient {
     ) -> Result<(u32, Vec<MessageMeta>)> {
         let uidvalidity = self.select_checked(folder, expect)?;
         let mut uids: Vec<u32> = self.session.uid_search(criteria)?.into_iter().collect();
-        uids.sort_unstable_by(|a, b| b.cmp(a));
+        uids.sort_unstable_by_key(|&u| std::cmp::Reverse(u));
         uids.truncate(limit);
         Ok((uidvalidity, self.fetch_metas(&uids)?))
     }
@@ -141,7 +141,7 @@ impl ImapClient {
             });
         }
         // fetch 不保证按请求顺序返回，这里恢复 UID 降序。
-        out.sort_unstable_by(|a, b| b.uid.cmp(&a.uid));
+        out.sort_unstable_by_key(|m| std::cmp::Reverse(m.uid));
         Ok(out)
     }
 
