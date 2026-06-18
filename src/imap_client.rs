@@ -36,9 +36,14 @@ pub struct ImapClient {
 }
 
 impl ImapClient {
-    /// 建立 TLS 会话。认证方式由是否配置 `client_id` 决定（与 provider 无关）：
-    /// 有 client_id → OAuth2 XOAUTH2（Gmail 或 Hotmail）；无 → App Password LOGIN（Gmail）。
+    /// 建立 TLS 会话（瞬时网络/TLS 错误自动重试）。连接是幂等的，重试安全。
     pub fn connect(account: &Account) -> Result<Self> {
+        crate::retry::with_retry(|| Self::connect_once(account))
+    }
+
+    /// 认证方式由是否配置 `client_id` 决定（与 provider 无关）：
+    /// 有 client_id → OAuth2 XOAUTH2（Gmail 或 Hotmail）；无 → App Password LOGIN（Gmail）。
+    fn connect_once(account: &Account) -> Result<Self> {
         let host = account.provider.imap_host();
         let port = account.provider.imap_port();
         let tls = native_tls::TlsConnector::builder().build()?;

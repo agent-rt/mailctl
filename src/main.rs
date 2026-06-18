@@ -12,6 +12,7 @@ mod mime;
 mod model;
 mod oauth;
 mod provider;
+mod retry;
 mod smtp_client;
 
 use clap::Parser;

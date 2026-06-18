@@ -164,17 +164,20 @@ fn now_unix() -> Result<u64> {
 }
 
 fn post_token(token_url: &str, form: &[(&str, &str)]) -> Result<TokenResponse> {
-    let response = ureq::post(token_url).send_form(form).map_err(|e| match e {
-        // 4xx 时 body 含 error_description，透传给用户便于排查。
-        ureq::Error::Status(_, resp) => Error::OAuth(
-            resp.into_string()
-                .unwrap_or_else(|_| "token 端点返回错误".to_string()),
-        ),
-        other => Error::Http(other.to_string()),
-    })?;
-    response
-        .into_json::<TokenResponse>()
-        .map_err(|e| Error::OAuth(format!("解析 token 响应失败: {e}")))
+    // 传输层错误（→ Error::Http）瞬时可重试；端点 4xx（→ Error::OAuth，如 invalid_grant）永久不重试。
+    crate::retry::with_retry(|| {
+        let response = ureq::post(token_url).send_form(form).map_err(|e| match e {
+            // 4xx 时 body 含 error_description，透传给用户便于排查。
+            ureq::Error::Status(_, resp) => Error::OAuth(
+                resp.into_string()
+                    .unwrap_or_else(|_| "token 端点返回错误".to_string()),
+            ),
+            other => Error::Http(other.to_string()),
+        })?;
+        response
+            .into_json::<TokenResponse>()
+            .map_err(|e| Error::OAuth(format!("解析 token 响应失败: {e}")))
+    })
 }
 
 /// 阻塞等待一次回调请求，解析出 ?code= 与 ?state=。

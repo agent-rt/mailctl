@@ -43,6 +43,7 @@ Most mail tools are designed for humans. Agents need different things:
 - 💾 **Local cache (SQLite)**: re-reading a message skips re-downloading it (bodies are immutable, so hits are always correct). `sync` pulls folder metadata into a local store for `search --cached` — fast, zero-network queries. Searches are **real-time by default**; the cache is explicit (`--cached`).
 - 🔍 **Full-text search (FTS5)**: `search --fts` runs a local, zero-network full-text query over subjects, senders, and the bodies of messages you've `read`. Uses a trigram tokenizer, so substring and CJK matching work well.
 - 🔐 **Secrets stay out of files**: credentials live in the macOS Keychain, or are injected at runtime via a secret manager (see [Secret storage](#secret-storage)).
+- 🔁 **Transient-error retries**: connection (TLS/login) and OAuth token fetch retry with exponential backoff on network blips. Write operations are never auto-retried, so a lost response can't cause a double-send or double-move.
 
 ## Requirements
 
@@ -209,6 +210,7 @@ src/
 ├── smtp_client.rs  SMTP send/draft (App Password or XOAUTH2)
 ├── mime.rs         MIME parsing (mail-parser)
 ├── cache.rs        SQLite cache: bodies + metadata + FTS5 index (rusqlite, bundled)
+├── retry.rs        transient-error retry (backoff) for idempotent network steps
 ├── audit.rs        JSONL audit log for mutations
 └── model.rs        JSON output contracts
 ```

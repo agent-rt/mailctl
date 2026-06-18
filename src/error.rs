@@ -74,4 +74,48 @@ pub enum Error {
     Other(String),
 }
 
+impl Error {
+    /// 是否为瞬时错误（网络/连接层），可安全重试。
+    /// 认证拒绝（No/Bad）、UIDVALIDITY 不符、本地错误等均为永久，不重试。
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Error::Io(_) | Error::Tls(_) | Error::Http(_) => true,
+            Error::Imap(e) => matches!(
+                e,
+                imap::Error::Io(_)
+                    | imap::Error::TlsHandshake(_)
+                    | imap::Error::Tls(_)
+                    | imap::Error::ConnectionLost
+            ),
+            _ => false,
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn transience_classification() {
+        // 瞬时：网络/连接层
+        let io = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "reset",
+        ));
+        assert!(io.is_transient());
+        // 永久：不可重试（重试会误伤）
+        assert!(!Error::Config("x".into()).is_transient());
+        assert!(!Error::OAuth("invalid_grant".into()).is_transient());
+        assert!(
+            !Error::UidValidityMismatch {
+                expected: 1,
+                actual: 2
+            }
+            .is_transient()
+        );
+        assert!(!Error::SendNotConfirmed.is_transient());
+    }
+}
