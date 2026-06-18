@@ -142,26 +142,37 @@ fn run(cli: Cli) -> Result<()> {
             }
             print_json(&body)
         }
-        Command::Flag { uid, read, star } => {
+        Command::Flag {
+            uids,
+            read,
+            star,
+            expect_uidvalidity,
+        } => {
             let config = Config::load()?;
             let account = config.resolve(cli.account.as_deref())?;
-            let mut client = ImapClient::connect(account)?;
-            let mut applied = Vec::new();
+            let mut flags = Vec::new();
             if read {
-                client.add_flag(&cli.folder, uid, "\\Seen")?;
-                applied.push("read");
+                flags.push("\\Seen");
             }
             if star {
-                client.add_flag(&cli.folder, uid, "\\Flagged")?;
-                applied.push("star");
+                flags.push("\\Flagged");
             }
+            if flags.is_empty() {
+                return Err(Error::Other(
+                    "请用 --read 和/或 --star 指定要设置的标志".to_string(),
+                ));
+            }
+            let n = uids.len();
+            let mut client = ImapClient::connect(account)?;
+            client.add_flags(&cli.folder, &uids, &flags, expect_uidvalidity)?;
             client.logout()?;
-            print_json(&ActionResult {
-                ok: true,
-                action: "flag",
-                uid: Some(uid),
-                detail: format!("已应用: {}", applied.join(", ")),
-            })
+            print_json(&json!({
+                "ok": true,
+                "action": "flag",
+                "uids": uids,
+                "applied": flags,
+                "detail": format!("已为 {n} 封设置 {}", flags.join(" ")),
+            }))
         }
         Command::Trash {
             uids,

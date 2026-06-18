@@ -107,7 +107,7 @@ All commands accept `--account <email>` (defaults to the default account) and `-
 | `sync` | Incrementally pull a folder's metadata into the local cache (for `search --cached` / `--fts`). |
 | `read <uid>` | Read one message's body (`BODY.PEEK` — does **not** mark as read; cached locally). |
 | `cache info` / `cache clear` | Inspect or clear the local body cache. |
-| `flag <uid> [--read] [--star]` | Set message flags. |
+| `flag <uids...> [--read] [--star] [--expect-uidvalidity N]` | Set flags on one or more messages. |
 | `move <uids...> --to <folder> [--create] [--expect-uidvalidity N]` | Move messages (reversible). |
 | `label <uids...> [--add L] [--remove L] [--expect-uidvalidity N]` | Add/remove Gmail labels (Gmail only). |
 | `trash <uids...> [--confirm] [--expect-uidvalidity N]` | Move to trash. Without `--confirm`, previews only. |

@@ -28,8 +28,8 @@ impl imap::Authenticator for XOAuth2 {
     }
 }
 
-/// 单条 `UID MOVE` 的最大 UID 数：大集合分批，避免巨型命令拖慢/被拒。
-const MOVE_CHUNK: usize = 50;
+/// 单条 UID 命令（MOVE/STORE）的最大 UID 数：大集合分批，避免巨型命令拖慢/被拒。
+const UID_CHUNK: usize = 50;
 
 pub struct ImapClient {
     session: imap::Session<TlsStream<TcpStream>>,
@@ -194,7 +194,7 @@ impl ImapClient {
     ) -> Result<u32> {
         let uidvalidity = self.select_checked(source, expect)?;
         let dest_wire = wire(dest);
-        for chunk in uids.chunks(MOVE_CHUNK) {
+        for chunk in uids.chunks(UID_CHUNK) {
             let set = chunk
                 .iter()
                 .map(u32::to_string)
@@ -221,11 +221,24 @@ impl ImapClient {
         Ok(raw.to_vec())
     }
 
-    /// 给邮件加 flag，如 `\\Seen`、`\\Flagged`。
-    pub fn add_flag(&mut self, folder: &str, uid: u32, flag: &str) -> Result<()> {
-        self.session.select(wire(folder))?;
-        self.session
-            .uid_store(uid.to_string(), format!("+FLAGS ({flag})"))?;
+    /// 批量给邮件加 flag（如 `\\Seen`、`\\Flagged`）。大集合自动分批。
+    pub fn add_flags(
+        &mut self,
+        folder: &str,
+        uids: &[u32],
+        flags: &[&str],
+        expect: Option<u32>,
+    ) -> Result<()> {
+        self.select_checked(folder, expect)?;
+        let spec = format!("+FLAGS ({})", flags.join(" "));
+        for chunk in uids.chunks(UID_CHUNK) {
+            let set = chunk
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            self.session.uid_store(&set, &spec)?;
+        }
         Ok(())
     }
 

@@ -52,15 +52,19 @@ pub enum Command {
     /// 读取单封邮件正文。
     Read { uid: u32 },
 
-    /// 修改邮件标志。
+    /// 修改邮件标志。支持一次多封。
     Flag {
-        uid: u32,
+        #[arg(required = true)]
+        uids: Vec<u32>,
         /// 标记为已读。
         #[arg(long)]
         read: bool,
         /// 加星标。
         #[arg(long)]
         star: bool,
+        /// 校验文件夹 UIDVALIDITY；不符则中止。
+        #[arg(long)]
+        expect_uidvalidity: Option<u32>,
     },
 
     /// 移到回收站（可恢复）。支持一次多封；不带 --confirm 时仅预览将删清单。
