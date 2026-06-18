@@ -39,7 +39,7 @@ Most mail tools are designed for humans. Agents need different things:
 - 🌏 **Correct internationalization**: RFC 2047 encoded-word subjects and modified-UTF-7 folder names are decoded properly (CJK, emoji, etc.).
 - 🏷️ **Organize**: move between folders, add/remove Gmail labels, list folders/labels.
 - 🗑️ **Manage safely**: preview → confirm trash, restore from trash, audit log, UIDVALIDITY consistency checks.
-- 📨 **Bulk detection**: every message is flagged `is_bulk` based on the `List-Unsubscribe` header — a reliable signal for marketing/newsletters.
+- 📨 **Bulk detection**: every message is flagged `is_bulk` from the `List-Unsubscribe`, `List-Id`, and `Precedence` headers — a signal for marketing/newsletters/list mail (a hint for triage, not a delete trigger).
 - 💾 **Local cache (SQLite)**: re-reading a message skips re-downloading it (bodies are immutable, so hits are always correct). `sync` pulls folder metadata into a local store for `search --cached` — fast, zero-network queries. Searches are **real-time by default**; the cache is explicit (`--cached`).
 - 🔍 **Full-text search (FTS5)**: `search --fts` runs a local, zero-network full-text query over subjects, senders, and the bodies of messages you've `read`. Uses a trigram tokenizer, so substring and CJK matching work well.
 - 🔐 **Secrets stay out of files**: credentials live in the macOS Keychain, or are injected at runtime via a secret manager (see [Secret storage](#secret-storage)).
@@ -103,7 +103,7 @@ All commands accept `--account <email>` (defaults to the default account) and `-
 | `auth list` | List configured accounts. |
 | `auth logout <email>` | Remove an account and wipe its stored credentials. |
 | `folders` | List folders/labels (`{name, selectable}`). |
-| `search [query] [--limit N] [--expect-uidvalidity N] [--cached] [--fts]` | Search; metadata only (token-lean). Real-time by default; `--cached` reads the local store; `--fts` runs local full-text search (both need `sync`). |
+| `search [query] [--limit N] [--expect-uidvalidity N] [--cached] [--fts] [--all-accounts]` | Search; metadata only (token-lean). Real-time by default; `--cached` reads the local store; `--fts` runs local full-text search (both need `sync`); `--all-accounts` searches every account, grouped by account. |
 | `sync` | Incrementally pull a folder's metadata into the local cache (for `search --cached` / `--fts`). |
 | `read <uid>` | Read one message's body (`BODY.PEEK` — does **not** mark as read; cached locally). |
 | `cache info` / `cache clear` | Inspect or clear the local body cache. |

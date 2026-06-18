@@ -24,6 +24,17 @@ pub struct SearchResult {
     pub messages: Vec<MessageMeta>,
 }
 
+/// `search --all-accounts` 的单账户分组结果。一个账户失败（error）不影响其他账户。
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountSearch {
+    pub account: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uidvalidity: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub messages: Vec<MessageMeta>,
+}
+
 /// `read` 的完整正文输出。
 #[derive(Debug, Clone, Serialize)]
 pub struct MessageBody {

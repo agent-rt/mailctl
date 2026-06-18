@@ -343,14 +343,17 @@ fn quote_label(label: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// 头部是否含 `List-Unsubscribe` 字段——群发/营销邮件的可靠信号。
-/// 字段名大小写不敏感，按子串匹配即可（正常头部不会在别处出现此串）。
+/// 头部是否为群发/营销邮件。多判据（任一命中即真）：
+/// `List-Unsubscribe`、`List-Id`（邮件列表）、`Precedence: bulk|list|junk`。
+/// 头部基本是 ASCII，lossy 小写后子串匹配即可。
 fn detect_bulk(header: &[u8]) -> bool {
-    const NEEDLE: &[u8] = b"list-unsubscribe";
-    header
-        .to_ascii_lowercase()
-        .windows(NEEDLE.len())
-        .any(|w| w == NEEDLE)
+    let h = String::from_utf8_lossy(header).to_ascii_lowercase();
+    h.contains("list-unsubscribe")
+        || h.contains("list-id:")
+        || h.contains("precedence: bulk")
+        || h.contains("precedence:bulk")
+        || h.contains("precedence: list")
+        || h.contains("precedence: junk")
 }
 
 /// 解码 RFC 2047 编码词（如 `=?UTF-8?B?...?=`）；失败回退 UTF-8 lossy。
@@ -397,9 +400,13 @@ mod tests {
         let personal = b"From: alice@x.com\r\nTo: bob@y.com\r\nSubject: lunch?\r\n";
         // 字段名大小写不敏感
         let lower_case = b"from: a@b\r\nlist-unsubscribe: <mailto:u@b>\r\n";
+        let precedence = b"From: n@x.com\r\nPrecedence: bulk\r\nSubject: promo\r\n";
+        let list_id = b"From: n@x.com\r\nList-Id: <dev.example.com>\r\nSubject: digest\r\n";
         assert!(detect_bulk(marketing));
         assert!(!detect_bulk(personal));
         assert!(detect_bulk(lower_case));
+        assert!(detect_bulk(precedence));
+        assert!(detect_bulk(list_id));
     }
 
     #[test]

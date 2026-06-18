@@ -19,7 +19,7 @@ use cli::{AuthAction, CacheAction, Cli, Command};
 use config::{Account, Config};
 use error::{Error, Result};
 use imap_client::ImapClient;
-use model::{ActionResult, MessageMeta, SearchResult, print_json};
+use model::{AccountSearch, ActionResult, MessageMeta, SearchResult, print_json};
 use provider::Provider;
 use serde_json::json;
 use std::str::FromStr;
@@ -42,8 +42,49 @@ fn run(cli: Cli) -> Result<()> {
             expect_uidvalidity,
             cached,
             fts,
+            all_accounts,
         } => {
             let config = Config::load()?;
+            if all_accounts {
+                if cached || fts {
+                    return Err(Error::Other(
+                        "--all-accounts 不能与 --cached/--fts 同用".to_string(),
+                    ));
+                }
+                // 实时跨账户：逐账户连接搜索，单账户失败记 error 不中断其余。
+                let criteria = translate_query(query.as_deref())?;
+                let mut results = Vec::new();
+                for account in &config.accounts {
+                    let entry = match ImapClient::connect(account) {
+                        Ok(mut client) => {
+                            let r = client.search(&cli.folder, &criteria, limit, None);
+                            let _ = client.logout();
+                            match r {
+                                Ok((uidvalidity, messages)) => AccountSearch {
+                                    account: account.email.clone(),
+                                    uidvalidity: Some(uidvalidity),
+                                    error: None,
+                                    messages,
+                                },
+                                Err(e) => AccountSearch {
+                                    account: account.email.clone(),
+                                    uidvalidity: None,
+                                    error: Some(e.to_string()),
+                                    messages: Vec::new(),
+                                },
+                            }
+                        }
+                        Err(e) => AccountSearch {
+                            account: account.email.clone(),
+                            uidvalidity: None,
+                            error: Some(e.to_string()),
+                            messages: Vec::new(),
+                        },
+                    };
+                    results.push(entry);
+                }
+                return print_json(&json!({ "folder": cli.folder, "accounts": results }));
+            }
             let account = config.resolve(cli.account.as_deref())?;
             if fts {
                 // 本地 FTS5 全文检索（零网络）。
