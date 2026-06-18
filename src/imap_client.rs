@@ -98,7 +98,41 @@ impl ImapClient {
         Ok((uidvalidity, self.fetch_metas(uids)?))
     }
 
-    fn fetch_metas(&mut self, uids: &[u32]) -> Result<Vec<MessageMeta>> {
+    /// SELECT 文件夹并返回 (UIDVALIDITY, UIDNEXT)。sync 用。
+    pub fn select_state(&mut self, folder: &str) -> Result<(u32, u32)> {
+        let mailbox = self.session.select(wire(folder))?;
+        Ok((
+            mailbox.uid_validity.unwrap_or(0),
+            mailbox.uid_next.unwrap_or(0),
+        ))
+    }
+
+    /// 当前已选文件夹的全部 UID（UID SEARCH ALL）。便宜，只回 UID。
+    pub fn uid_search_all(&mut self) -> Result<Vec<u32>> {
+        Ok(self.session.uid_search("ALL")?.into_iter().collect())
+    }
+
+    /// 拉取一批 UID 的 unread 标志（仅 FLAGS，轻量）。sync 刷新已缓存邮件用。
+    pub fn fetch_unread(&mut self, uids: &[u32]) -> Result<Vec<(u32, bool)>> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let set = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let fetches = self.session.uid_fetch(&set, "(UID FLAGS)")?;
+        let mut out = Vec::with_capacity(fetches.len());
+        for f in fetches.iter() {
+            let unread = !f.flags().iter().any(|fl| matches!(fl, Flag::Seen));
+            out.push((f.uid.unwrap_or(0), unread));
+        }
+        Ok(out)
+    }
+
+    /// 取指定 UID 集合的完整元数据（文件夹须已 SELECT）。sync 拉新邮件用。
+    pub fn fetch_metas(&mut self, uids: &[u32]) -> Result<Vec<MessageMeta>> {
         if uids.is_empty() {
             return Ok(Vec::new());
         }

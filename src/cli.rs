@@ -41,6 +41,9 @@ pub enum Command {
         /// 校验文件夹 UIDVALIDITY；不符则中止（防 UID 失效）。
         #[arg(long)]
         expect_uidvalidity: Option<u32>,
+        /// 读本地缓存（零网络、需先 sync；flag 可能陈旧）。默认走 IMAP 实时。
+        #[arg(long)]
+        cached: bool,
     },
 
     /// 读取单封邮件正文。
@@ -90,6 +93,9 @@ pub enum Command {
         #[command(subcommand)]
         action: CacheAction,
     },
+
+    /// 把当前账户指定文件夹的元数据增量同步进本地缓存（供 search --cached）。
+    Sync,
 
     /// 移动邮件到其他文件夹（重组，可逆——移回即恢复）。
     Move {

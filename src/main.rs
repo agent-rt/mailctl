@@ -19,7 +19,7 @@ use cli::{AuthAction, CacheAction, Cli, Command};
 use config::{Account, Config};
 use error::{Error, Result};
 use imap_client::ImapClient;
-use model::{ActionResult, SearchResult, print_json};
+use model::{ActionResult, MessageMeta, SearchResult, print_json};
 use provider::Provider;
 use serde_json::json;
 use std::str::FromStr;
@@ -40,19 +40,45 @@ fn run(cli: Cli) -> Result<()> {
             query,
             limit,
             expect_uidvalidity,
+            cached,
         } => {
             let config = Config::load()?;
             let account = config.resolve(cli.account.as_deref())?;
-            let criteria = translate_query(query.as_deref());
-            let mut client = ImapClient::connect(account)?;
-            let (uidvalidity, messages) =
-                client.search(&cli.folder, &criteria, limit, expect_uidvalidity)?;
-            client.logout()?;
-            print_json(&SearchResult {
-                folder: cli.folder,
-                uidvalidity,
-                messages,
-            })
+            if cached {
+                // 零网络：读本地缓存，Rust 侧过滤。需先 sync；flag 可能陈旧。
+                let conn = cache::open()?;
+                let (uidvalidity, last_sync) =
+                    cache::folder_state(&conn, &account.email, &cli.folder)?.ok_or_else(|| {
+                        Error::Other(format!(
+                            "{} 的 {} 尚未 sync，请先 `mailctl sync`",
+                            account.email, cli.folder
+                        ))
+                    })?;
+                let messages: Vec<MessageMeta> =
+                    cache::all_messages(&conn, &account.email, &cli.folder, uidvalidity)?
+                        .into_iter()
+                        .filter(|m| cached_match(m, query.as_deref()))
+                        .take(limit)
+                        .collect();
+                print_json(&json!({
+                    "folder": cli.folder,
+                    "uidvalidity": uidvalidity,
+                    "cached": true,
+                    "last_sync": last_sync,
+                    "messages": messages,
+                }))
+            } else {
+                let criteria = translate_query(query.as_deref());
+                let mut client = ImapClient::connect(account)?;
+                let (uidvalidity, messages) =
+                    client.search(&cli.folder, &criteria, limit, expect_uidvalidity)?;
+                client.logout()?;
+                print_json(&SearchResult {
+                    folder: cli.folder,
+                    uidvalidity,
+                    messages,
+                })
+            }
         }
         Command::Read { uid } => {
             let config = Config::load()?;
@@ -173,10 +199,11 @@ fn run(cli: Cli) -> Result<()> {
         Command::Cache { action } => match action {
             CacheAction::Info => {
                 let conn = cache::open()?;
-                let (count, bytes) = cache::info(&conn)?;
+                let (bodies, bytes, messages) = cache::info(&conn)?;
                 print_json(&json!({
-                    "cached_bodies": count,
+                    "cached_bodies": bodies,
                     "bytes": bytes,
+                    "cached_messages": messages,
                     "path": cache::db_path()?.display().to_string(),
                 }))
             }
@@ -186,10 +213,94 @@ fn run(cli: Cli) -> Result<()> {
                 print_json(&json!({
                     "ok": true,
                     "action": "cache-clear",
-                    "detail": "已清空正文缓存",
+                    "detail": "已清空缓存（正文 + 元数据）",
                 }))
             }
         },
+        Command::Sync => {
+            use std::collections::HashSet;
+            let config = Config::load()?;
+            let account = config.resolve(cli.account.as_deref())?;
+            let mut conn = cache::open()?;
+
+            let mut client = ImapClient::connect(account)?;
+            let (uidvalidity, uidnext) = client.select_state(&cli.folder)?;
+
+            // UIDVALIDITY 变更 → 该文件夹缓存作废，全量重建。
+            if cache::folder_state(&conn, &account.email, &cli.folder)?.map(|(v, _)| v)
+                != Some(uidvalidity)
+            {
+                cache::clear_folder(&conn, &account.email, &cli.folder)?;
+            }
+
+            let server: Vec<u32> = client.uid_search_all()?;
+            let server_set: HashSet<u32> = server.iter().copied().collect();
+            let cached: HashSet<u32> =
+                cache::cached_uids(&conn, &account.email, &cli.folder, uidvalidity)?
+                    .into_iter()
+                    .collect();
+
+            let new_uids: Vec<u32> = server
+                .iter()
+                .copied()
+                .filter(|u| !cached.contains(u))
+                .collect();
+            let deleted: Vec<u32> = cached
+                .iter()
+                .copied()
+                .filter(|u| !server_set.contains(u))
+                .collect();
+            let existing: Vec<u32> = server
+                .iter()
+                .copied()
+                .filter(|u| cached.contains(u))
+                .collect();
+
+            // 新邮件：完整元数据。
+            if !new_uids.is_empty() {
+                let metas = client.fetch_metas(&new_uids)?;
+                cache::upsert_messages(
+                    &mut conn,
+                    &account.email,
+                    &cli.folder,
+                    uidvalidity,
+                    &metas,
+                )?;
+            }
+            // 删除：本地多出来的清掉。
+            if !deleted.is_empty() {
+                cache::delete_messages(
+                    &mut conn,
+                    &account.email,
+                    &cli.folder,
+                    uidvalidity,
+                    &deleted,
+                )?;
+            }
+            // 已存在：刷新 flags（无 MODSEQ，只能轻量全量拉 FLAGS）。
+            if !existing.is_empty() {
+                let flags = client.fetch_unread(&existing)?;
+                cache::update_unread(&mut conn, &account.email, &cli.folder, uidvalidity, &flags)?;
+            }
+            cache::set_folder_state(
+                &conn,
+                &account.email,
+                &cli.folder,
+                uidvalidity,
+                Some(uidnext),
+            )?;
+            client.logout()?;
+
+            print_json(&json!({
+                "ok": true,
+                "action": "sync",
+                "folder": cli.folder,
+                "uidvalidity": uidvalidity,
+                "new": new_uids.len(),
+                "deleted": deleted.len(),
+                "total": server.len(),
+            }))
+        }
         Command::Move {
             uids,
             to,
@@ -395,6 +506,32 @@ fn run_send(
         client.logout()?;
         Err(Error::SendNotConfirmed)
     }
+}
+
+/// `search --cached` 的本地匹配（AND 语义）。支持 is:unread/is:read、from:、subject:、自由词；
+/// 其余 token（如 to:、is:starred，缓存未存）退化为 subject/from 子串匹配。
+fn cached_match(m: &MessageMeta, query: Option<&str>) -> bool {
+    let Some(query) = query else {
+        return true;
+    };
+    for token in query.split_whitespace() {
+        let ok = if token == "is:unread" {
+            m.unread
+        } else if token == "is:read" {
+            !m.unread
+        } else if let Some(rest) = token.strip_prefix("from:") {
+            m.from.to_lowercase().contains(&rest.to_lowercase())
+        } else if let Some(rest) = token.strip_prefix("subject:") {
+            m.subject.to_lowercase().contains(&rest.to_lowercase())
+        } else {
+            let t = token.to_lowercase();
+            m.subject.to_lowercase().contains(&t) || m.from.to_lowercase().contains(&t)
+        };
+        if !ok {
+            return false;
+        }
+    }
+    true
 }
 
 /// 把简易查询语法翻译为 IMAP SEARCH 条件。
