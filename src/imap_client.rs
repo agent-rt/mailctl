@@ -28,6 +28,9 @@ impl imap::Authenticator for XOAuth2 {
     }
 }
 
+/// 单条 `UID MOVE` 的最大 UID 数：大集合分批，避免巨型命令拖慢/被拒。
+const MOVE_CHUNK: usize = 50;
+
 pub struct ImapClient {
     session: imap::Session<TlsStream<TcpStream>>,
 }
@@ -181,6 +184,7 @@ impl ImapClient {
 
     /// 把一批 UID 从 `source` 移动到 `dest`（IMAP MOVE）。trash/restore 共用。
     /// 返回 source 的 UIDVALIDITY，供审计与未来的一致性校验。
+    /// 大集合自动分批（同一会话多条 `UID MOVE`），避免单条巨型命令被服务器拒绝/拖慢。
     pub fn move_messages(
         &mut self,
         source: &str,
@@ -189,12 +193,15 @@ impl ImapClient {
         expect: Option<u32>,
     ) -> Result<u32> {
         let uidvalidity = self.select_checked(source, expect)?;
-        let set = uids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        self.session.uid_mv(&set, wire(dest))?;
+        let dest_wire = wire(dest);
+        for chunk in uids.chunks(MOVE_CHUNK) {
+            let set = chunk
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            self.session.uid_mv(&set, &dest_wire)?;
+        }
         Ok(uidvalidity)
     }
 

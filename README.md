@@ -123,9 +123,11 @@ All commands accept `--account <email>` (defaults to the default account) and `-
 | `is:unread` / `is:read` | unseen / seen |
 | `is:starred` | flagged |
 | `from:x` `to:x` `subject:x` | header substring match |
+| `since:YYYY-MM-DD` / `before:YYYY-MM-DD` | received on/after, before (IMAP `SINCE`/`BEFORE`) |
+| `newer_than:Nd` | received within the last N days |
 | any other word | full-text match |
 
-Omit the query to list everything.
+Omit the query to list everything. Date tokens apply to live search; `--cached`/`--fts` ignore them.
 
 ## Safety model
 

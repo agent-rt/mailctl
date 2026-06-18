@@ -88,7 +88,7 @@ fn run(cli: Cli) -> Result<()> {
                     "messages": messages,
                 }))
             } else {
-                let criteria = translate_query(query.as_deref());
+                let criteria = translate_query(query.as_deref())?;
                 let mut client = ImapClient::connect(account)?;
                 let (uidvalidity, messages) =
                     client.search(&cli.folder, &criteria, limit, expect_uidvalidity)?;
@@ -550,6 +550,13 @@ fn cached_match(m: &MessageMeta, query: Option<&str>) -> bool {
         return true;
     };
     for token in query.split_whitespace() {
+        // 日期过滤仅在实时 search 生效（IMAP SINCE/BEFORE）；缓存模式跳过这些 token。
+        if token.starts_with("since:")
+            || token.starts_with("before:")
+            || token.starts_with("newer_than:")
+        {
+            continue;
+        }
         let ok = if token == "is:unread" {
             m.unread
         } else if token == "is:read" {
@@ -570,9 +577,10 @@ fn cached_match(m: &MessageMeta, query: Option<&str>) -> bool {
 }
 
 /// 把简易查询语法翻译为 IMAP SEARCH 条件。
-fn translate_query(query: Option<&str>) -> String {
+/// 日期：`since:YYYY-MM-DD`、`before:YYYY-MM-DD`、`newer_than:Nd`（N 天内）。
+fn translate_query(query: Option<&str>) -> Result<String> {
     let Some(query) = query else {
-        return "ALL".to_string();
+        return Ok("ALL".to_string());
     };
     let mut parts = Vec::new();
     for token in query.split_whitespace() {
@@ -582,6 +590,12 @@ fn translate_query(query: Option<&str>) -> String {
             parts.push(format!("TO \"{rest}\""));
         } else if let Some(rest) = token.strip_prefix("subject:") {
             parts.push(format!("SUBJECT \"{rest}\""));
+        } else if let Some(rest) = token.strip_prefix("since:") {
+            parts.push(format!("SINCE {}", imap_date_from_ymd(rest)?));
+        } else if let Some(rest) = token.strip_prefix("before:") {
+            parts.push(format!("BEFORE {}", imap_date_from_ymd(rest)?));
+        } else if let Some(rest) = token.strip_prefix("newer_than:") {
+            parts.push(format!("SINCE {}", imap_date_newer_than(rest)?));
         } else if token == "is:unread" {
             parts.push("UNSEEN".to_string());
         } else if token == "is:read" {
@@ -593,8 +607,87 @@ fn translate_query(query: Option<&str>) -> String {
         }
     }
     if parts.is_empty() {
-        "ALL".to_string()
+        Ok("ALL".to_string())
     } else {
-        parts.join(" ")
+        Ok(parts.join(" "))
+    }
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// `YYYY-MM-DD` → IMAP `d-Mmm-yyyy`。
+fn imap_date_from_ymd(s: &str) -> Result<String> {
+    let bad = || Error::Other(format!("日期格式应为 YYYY-MM-DD: {s}"));
+    let mut it = s.split('-');
+    let y: i64 = it.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    let m: usize = it.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    let d: u32 = it.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    if it.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return Err(bad());
+    }
+    Ok(format!("{d}-{}-{y}", MONTHS[m - 1]))
+}
+
+/// `Nd` → IMAP 日期（今天往前 N 天）。
+fn imap_date_newer_than(s: &str) -> Result<String> {
+    let days: i64 = s
+        .strip_suffix('d')
+        .unwrap_or(s)
+        .parse()
+        .map_err(|_| Error::Other(format!("newer_than 应为 Nd（如 7d）: {s}")))?;
+    let now_days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|t| t.as_secs() as i64 / 86_400)
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_days(now_days - days);
+    Ok(format!("{d}-{}-{y}", MONTHS[(m - 1) as usize]))
+}
+
+/// 自 Unix 纪元起的天数 → 公历 (年, 月, 日)。Howard Hinnant 算法，无需日期库。
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ymd_to_imap_date() {
+        assert_eq!(imap_date_from_ymd("2026-06-18").unwrap(), "18-Jun-2026");
+        assert_eq!(imap_date_from_ymd("2020-01-01").unwrap(), "1-Jan-2020");
+        assert!(imap_date_from_ymd("2026/06/18").is_err());
+        assert!(imap_date_from_ymd("2026-13-01").is_err());
+    }
+
+    #[test]
+    fn civil_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1)); // 纪元
+        assert_eq!(civil_from_days(31), (1970, 2, 1)); // 1月 31 天
+        assert_eq!(civil_from_days(59), (1970, 3, 1)); // 1970 非闰年
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+    }
+
+    #[test]
+    fn translate_dates() {
+        assert_eq!(
+            translate_query(Some("since:2026-06-01")).unwrap(),
+            "SINCE 1-Jun-2026"
+        );
+        assert_eq!(
+            translate_query(Some("before:2026-07-01 is:unread")).unwrap(),
+            "BEFORE 1-Jul-2026 UNSEEN"
+        );
     }
 }
