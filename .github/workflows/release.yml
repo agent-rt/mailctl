@@ -26,8 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Both built on Apple Silicon (macos-14); x86_64 is cross-compiled
+          # (macOS SDK is universal) to avoid scarce Intel-runner queues.
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-14
           - target: aarch64-apple-darwin
             os: macos-14
     steps:
