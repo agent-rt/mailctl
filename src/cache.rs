@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 fn now_unix() -> i64 {
     SystemTime::now()
@@ -86,8 +86,53 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
         version = 2;
     }
+    if version < 3 {
+        // Phase 3：FTS5 全文索引。trigram 分词器做子串匹配，对 CJK 友好（查询需 ≥3 字符）。
+        // 键列 UNINDEXED，仅 subject/sender/body 入索引。
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(
+                 account UNINDEXED, folder UNINDEXED, uidvalidity UNINDEXED, uid UNINDEXED,
+                 subject, sender, body, tokenize='trigram'
+             );
+             PRAGMA user_version = 3;",
+        )?;
+        version = 3;
+    }
     debug_assert_eq!(version, SCHEMA_VERSION);
     let _ = version;
+    Ok(())
+}
+
+/// FTS 行替换（先删后插，保证一封邮件只有一行）。在调用方的事务/连接里执行。
+/// 参数多是固有的：复合键（4）+ 三个可索引文本字段。
+#[allow(clippy::too_many_arguments)]
+fn fts_replace(
+    conn: &Connection,
+    account: &str,
+    folder: &str,
+    uidvalidity: u32,
+    uid: u32,
+    subject: &str,
+    sender: &str,
+    body: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM msg_fts WHERE account=?1 AND folder=?2 AND uidvalidity=?3 AND uid=?4",
+        params![account, folder, uidvalidity as i64, uid as i64],
+    )?;
+    conn.execute(
+        "INSERT INTO msg_fts (account, folder, uidvalidity, uid, subject, sender, body)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            account,
+            folder,
+            uidvalidity as i64,
+            uid as i64,
+            subject,
+            sender,
+            body
+        ],
+    )?;
     Ok(())
 }
 
@@ -139,9 +184,11 @@ pub fn info(conn: &Connection) -> Result<(i64, i64, i64)> {
     Ok((bodies, bytes, messages))
 }
 
-/// 清空全部缓存（正文 + 元数据 + 同步状态）。
+/// 清空全部缓存（正文 + 元数据 + 同步状态 + 全文索引）。
 pub fn clear(conn: &Connection) -> Result<()> {
-    conn.execute_batch("DELETE FROM bodies; DELETE FROM messages; DELETE FROM folders;")?;
+    conn.execute_batch(
+        "DELETE FROM bodies; DELETE FROM messages; DELETE FROM folders; DELETE FROM msg_fts;",
+    )?;
     Ok(())
 }
 
@@ -180,10 +227,14 @@ pub fn set_folder_state(
     Ok(())
 }
 
-/// 丢弃某文件夹全部缓存元数据（UIDVALIDITY 变更时调用）。
+/// 丢弃某文件夹全部缓存元数据 + 全文索引（UIDVALIDITY 变更时调用）。
 pub fn clear_folder(conn: &Connection, account: &str, folder: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM messages WHERE account = ?1 AND folder = ?2",
+        params![account, folder],
+    )?;
+    conn.execute(
+        "DELETE FROM msg_fts WHERE account = ?1 AND folder = ?2",
         params![account, folder],
     )?;
     Ok(())
@@ -237,9 +288,85 @@ pub fn upsert_messages(
                 m.is_bulk as i64,
             ])?;
         }
+        // 同步 FTS（subject + 发件人；正文留待 read 时补全）。
+        for m in metas {
+            fts_replace(
+                &tx,
+                account,
+                folder,
+                uidvalidity,
+                m.uid,
+                &m.subject,
+                &m.from,
+                "",
+            )?;
+        }
     }
     tx.commit()?;
     Ok(())
+}
+
+/// read 解析正文后调用：把该邮件的 FTS 行升级为含正文（subject+sender+body）。
+#[allow(clippy::too_many_arguments)]
+pub fn fts_index_body(
+    conn: &Connection,
+    account: &str,
+    folder: &str,
+    uidvalidity: u32,
+    uid: u32,
+    subject: &str,
+    sender: &str,
+    body: &str,
+) -> Result<()> {
+    fts_replace(
+        conn,
+        account,
+        folder,
+        uidvalidity,
+        uid,
+        subject,
+        sender,
+        body,
+    )
+}
+
+/// FTS 全文检索（trigram 子串匹配）。join 回 messages 取完整元数据，按相关度排序。
+pub fn fts_search(
+    conn: &Connection,
+    account: &str,
+    folder: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<MessageMeta>> {
+    // 把用户查询当作单个短语（双引号转义），避免 FTS5 操作符解释；trigram 据此做子串匹配。
+    let phrase = format!("\"{}\"", query.replace('"', "\"\""));
+    // FTS5 的 MATCH 须用表名（别名会被当列名），故不用 alias。
+    let mut stmt = conn.prepare(
+        "SELECT m.uid, m.from_addr, m.subject, m.date, m.unread, m.size, m.is_bulk
+         FROM msg_fts
+         JOIN messages m
+           ON m.account = msg_fts.account AND m.folder = msg_fts.folder
+          AND m.uidvalidity = msg_fts.uidvalidity AND m.uid = msg_fts.uid
+         WHERE msg_fts MATCH ?1 AND msg_fts.account = ?2 AND msg_fts.folder = ?3
+         ORDER BY msg_fts.rank
+         LIMIT ?4",
+    )?;
+    let rows = stmt.query_map(params![phrase, account, folder, limit as i64], |r| {
+        Ok(MessageMeta {
+            uid: r.get::<_, i64>(0)? as u32,
+            from: r.get(1)?,
+            subject: r.get(2)?,
+            date: r.get(3)?,
+            unread: r.get::<_, i64>(4)? != 0,
+            size: r.get::<_, Option<i64>>(5)?.map(|x| x as u32),
+            is_bulk: r.get::<_, i64>(6)? != 0,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 pub fn delete_messages(
@@ -254,8 +381,12 @@ pub fn delete_messages(
         let mut stmt = tx.prepare(
             "DELETE FROM messages WHERE account = ?1 AND folder = ?2 AND uidvalidity = ?3 AND uid = ?4",
         )?;
+        let mut fts = tx.prepare(
+            "DELETE FROM msg_fts WHERE account = ?1 AND folder = ?2 AND uidvalidity = ?3 AND uid = ?4",
+        )?;
         for &uid in uids {
             stmt.execute(params![account, folder, uidvalidity as i64, uid as i64])?;
+            fts.execute(params![account, folder, uidvalidity as i64, uid as i64])?;
         }
     }
     tx.commit()?;

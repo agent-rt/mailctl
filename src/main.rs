@@ -41,10 +41,30 @@ fn run(cli: Cli) -> Result<()> {
             limit,
             expect_uidvalidity,
             cached,
+            fts,
         } => {
             let config = Config::load()?;
             let account = config.resolve(cli.account.as_deref())?;
-            if cached {
+            if fts {
+                // 本地 FTS5 全文检索（零网络）。
+                let q = query.ok_or_else(|| Error::Other("--fts 需要查询词".to_string()))?;
+                let conn = cache::open()?;
+                let (uidvalidity, last_sync) =
+                    cache::folder_state(&conn, &account.email, &cli.folder)?.ok_or_else(|| {
+                        Error::Other(format!(
+                            "{} 的 {} 尚未 sync，请先 `mailctl sync`",
+                            account.email, cli.folder
+                        ))
+                    })?;
+                let messages = cache::fts_search(&conn, &account.email, &cli.folder, &q, limit)?;
+                print_json(&json!({
+                    "folder": cli.folder,
+                    "uidvalidity": uidvalidity,
+                    "fts": true,
+                    "last_sync": last_sync,
+                    "messages": messages,
+                }))
+            } else if cached {
                 // 零网络：读本地缓存，Rust 侧过滤。需先 sync；flag 可能陈旧。
                 let conn = cache::open()?;
                 let (uidvalidity, last_sync) =
@@ -105,7 +125,22 @@ fn run(cli: Cli) -> Result<()> {
                 }
             };
             client.logout()?;
-            print_json(&mime::parse(uid, &raw)?)
+            let body = mime::parse(uid, &raw)?;
+            // 顺手把正文喂进 FTS（best-effort），让全文检索覆盖已读邮件的正文。
+            if let Some(c) = &cache_conn {
+                let text = body.text.as_deref().unwrap_or("");
+                let _ = cache::fts_index_body(
+                    c,
+                    &account.email,
+                    &cli.folder,
+                    uidvalidity,
+                    uid,
+                    &body.subject,
+                    &body.from,
+                    text,
+                );
+            }
+            print_json(&body)
         }
         Command::Flag { uid, read, star } => {
             let config = Config::load()?;

@@ -41,6 +41,7 @@ Most mail tools are designed for humans. Agents need different things:
 - 🗑️ **Manage safely**: preview → confirm trash, restore from trash, audit log, UIDVALIDITY consistency checks.
 - 📨 **Bulk detection**: every message is flagged `is_bulk` based on the `List-Unsubscribe` header — a reliable signal for marketing/newsletters.
 - 💾 **Local cache (SQLite)**: re-reading a message skips re-downloading it (bodies are immutable, so hits are always correct). `sync` pulls folder metadata into a local store for `search --cached` — fast, zero-network queries. Searches are **real-time by default**; the cache is explicit (`--cached`).
+- 🔍 **Full-text search (FTS5)**: `search --fts` runs a local, zero-network full-text query over subjects, senders, and the bodies of messages you've `read`. Uses a trigram tokenizer, so substring and CJK matching work well.
 - 🔐 **Secrets stay out of files**: credentials live in the macOS Keychain, or are injected at runtime via a secret manager (see [Secret storage](#secret-storage)).
 
 ## Requirements
@@ -102,8 +103,8 @@ All commands accept `--account <email>` (defaults to the default account) and `-
 | `auth list` | List configured accounts. |
 | `auth logout <email>` | Remove an account and wipe its stored credentials. |
 | `folders` | List folders/labels (`{name, selectable}`). |
-| `search [query] [--limit N] [--expect-uidvalidity N] [--cached]` | Search; metadata only (token-lean). Real-time by default; `--cached` reads the local store (needs `sync`). |
-| `sync` | Incrementally pull a folder's metadata into the local cache (for `search --cached`). |
+| `search [query] [--limit N] [--expect-uidvalidity N] [--cached] [--fts]` | Search; metadata only (token-lean). Real-time by default; `--cached` reads the local store; `--fts` runs local full-text search (both need `sync`). |
+| `sync` | Incrementally pull a folder's metadata into the local cache (for `search --cached` / `--fts`). |
 | `read <uid>` | Read one message's body (`BODY.PEEK` — does **not** mark as read; cached locally). |
 | `cache info` / `cache clear` | Inspect or clear the local body cache. |
 | `flag <uid> [--read] [--star]` | Set message flags. |
@@ -205,7 +206,7 @@ src/
 ├── imap_client.rs  IMAP: search/read/flag/move/label/trash/folders + XOAUTH2
 ├── smtp_client.rs  SMTP send/draft (App Password or XOAUTH2)
 ├── mime.rs         MIME parsing (mail-parser)
-├── cache.rs        SQLite cache: bodies + folder metadata (rusqlite, bundled)
+├── cache.rs        SQLite cache: bodies + metadata + FTS5 index (rusqlite, bundled)
 ├── audit.rs        JSONL audit log for mutations
 └── model.rs        JSON output contracts
 ```

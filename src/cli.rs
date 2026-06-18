@@ -44,6 +44,9 @@ pub enum Command {
         /// 读本地缓存（零网络、需先 sync；flag 可能陈旧）。默认走 IMAP 实时。
         #[arg(long)]
         cached: bool,
+        /// 本地 FTS5 全文检索（零网络、需先 sync；查询词作子串匹配，含已 read 邮件的正文）。
+        #[arg(long)]
+        fts: bool,
     },
 
     /// 读取单封邮件正文。
