@@ -62,6 +62,9 @@ pub enum Error {
     #[error("邮件解析失败")]
     MimeParse,
 
+    #[error("缓存数据库错误: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
     #[error(
         "UIDVALIDITY 不一致：期望 {expected}，实际 {actual}。邮箱可能已重建，UID 已失效，请重新 search 后再操作"
     )]

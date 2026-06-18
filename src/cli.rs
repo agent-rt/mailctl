@@ -85,6 +85,12 @@ pub enum Command {
     /// 列出文件夹/标签。
     Folders,
 
+    /// 本地正文缓存管理。
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
+
     /// 移动邮件到其他文件夹（重组，可逆——移回即恢复）。
     Move {
         #[arg(required = true)]
@@ -132,6 +138,14 @@ pub enum Command {
         #[arg(long)]
         confirm: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CacheAction {
+    /// 显示缓存统计（条数 / 字节 / 路径）。
+    Info,
+    /// 清空正文缓存。
+    Clear,
 }
 
 #[derive(Subcommand, Debug)]

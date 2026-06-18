@@ -3,6 +3,7 @@
 
 mod audit;
 mod auth;
+mod cache;
 mod cli;
 mod config;
 mod error;
@@ -14,7 +15,7 @@ mod provider;
 mod smtp_client;
 
 use clap::Parser;
-use cli::{AuthAction, Cli, Command};
+use cli::{AuthAction, CacheAction, Cli, Command};
 use config::{Account, Config};
 use error::{Error, Result};
 use imap_client::ImapClient;
@@ -56,10 +57,29 @@ fn run(cli: Cli) -> Result<()> {
         Command::Read { uid } => {
             let config = Config::load()?;
             let account = config.resolve(cli.account.as_deref())?;
+            // 缓存是 best-effort：打开/读写失败都不阻断读取。
+            let cache_conn = cache::open().ok();
+
             let mut client = ImapClient::connect(account)?;
-            let body = client.read(&cli.folder, uid)?;
+            let uidvalidity = client.select_folder(&cli.folder)?;
+
+            let cached = cache_conn.as_ref().and_then(|c| {
+                cache::get_body(c, &account.email, uidvalidity, uid)
+                    .ok()
+                    .flatten()
+            });
+            let raw = match cached {
+                Some(bytes) => bytes, // 命中：跳过正文 FETCH
+                None => {
+                    let bytes = client.fetch_body(uid)?;
+                    if let Some(c) = &cache_conn {
+                        let _ = cache::put_body(c, &account.email, uidvalidity, uid, &bytes);
+                    }
+                    bytes
+                }
+            };
             client.logout()?;
-            print_json(&body)
+            print_json(&mime::parse(uid, &raw)?)
         }
         Command::Flag { uid, read, star } => {
             let config = Config::load()?;
@@ -150,6 +170,26 @@ fn run(cli: Cli) -> Result<()> {
             client.logout()?;
             print_json(&folders)
         }
+        Command::Cache { action } => match action {
+            CacheAction::Info => {
+                let conn = cache::open()?;
+                let (count, bytes) = cache::info(&conn)?;
+                print_json(&json!({
+                    "cached_bodies": count,
+                    "bytes": bytes,
+                    "path": cache::db_path()?.display().to_string(),
+                }))
+            }
+            CacheAction::Clear => {
+                let conn = cache::open()?;
+                cache::clear(&conn)?;
+                print_json(&json!({
+                    "ok": true,
+                    "action": "cache-clear",
+                    "detail": "已清空正文缓存",
+                }))
+            }
+        },
         Command::Move {
             uids,
             to,

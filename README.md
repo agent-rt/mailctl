@@ -40,6 +40,7 @@ Most mail tools are designed for humans. Agents need different things:
 - 🏷️ **Organize**: move between folders, add/remove Gmail labels, list folders/labels.
 - 🗑️ **Manage safely**: preview → confirm trash, restore from trash, audit log, UIDVALIDITY consistency checks.
 - 📨 **Bulk detection**: every message is flagged `is_bulk` based on the `List-Unsubscribe` header — a reliable signal for marketing/newsletters.
+- 💾 **Local body cache (SQLite)**: re-reading a message skips re-downloading it. Bodies are immutable per `(account, uidvalidity, uid)`, so cache hits are always correct — no staleness.
 - 🔐 **Secrets stay out of files**: credentials live in the macOS Keychain, or are injected at runtime via a secret manager (see [Secret storage](#secret-storage)).
 
 ## Requirements
@@ -102,7 +103,8 @@ All commands accept `--account <email>` (defaults to the default account) and `-
 | `auth logout <email>` | Remove an account and wipe its stored credentials. |
 | `folders` | List folders/labels (`{name, selectable}`). |
 | `search [query] [--limit N] [--expect-uidvalidity N]` | Search; returns metadata only (token-lean). |
-| `read <uid>` | Read one message's body (`BODY.PEEK` — does **not** mark as read). |
+| `read <uid>` | Read one message's body (`BODY.PEEK` — does **not** mark as read; cached locally). |
+| `cache info` / `cache clear` | Inspect or clear the local body cache. |
 | `flag <uid> [--read] [--star]` | Set message flags. |
 | `move <uids...> --to <folder> [--create] [--expect-uidvalidity N]` | Move messages (reversible). |
 | `label <uids...> [--add L] [--remove L] [--expect-uidvalidity N]` | Add/remove Gmail labels (Gmail only). |
@@ -202,6 +204,7 @@ src/
 ├── imap_client.rs  IMAP: search/read/flag/move/label/trash/folders + XOAUTH2
 ├── smtp_client.rs  SMTP send/draft (App Password or XOAUTH2)
 ├── mime.rs         MIME parsing (mail-parser)
+├── cache.rs        SQLite body cache (rusqlite, bundled)
 ├── audit.rs        JSONL audit log for mutations
 └── model.rs        JSON output contracts
 ```

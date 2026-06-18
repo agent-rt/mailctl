@@ -4,7 +4,7 @@
 use crate::auth;
 use crate::config::Account;
 use crate::error::{Error, Result};
-use crate::model::{FolderInfo, MessageBody, MessageMeta};
+use crate::model::{FolderInfo, MessageMeta};
 use crate::oauth;
 use imap::types::{Flag, NameAttribute};
 use imap_proto::types::Address;
@@ -164,17 +164,20 @@ impl ImapClient {
         Ok(uidvalidity)
     }
 
-    /// 拉取单封邮件原文并交给 MIME 解析。
-    /// 用 `BODY.PEEK[]` 而非 `RFC822`，避免读取副作用——不自动打 `\Seen`，
-    /// 是否标记已读由 Agent 显式 `flag --read` 决定。
-    pub fn read(&mut self, folder: &str, uid: u32) -> Result<MessageBody> {
-        self.session.select(wire(folder))?;
+    /// SELECT 文件夹并返回其 UIDVALIDITY（正文缓存用它作 key 的一部分）。
+    pub fn select_folder(&mut self, folder: &str) -> Result<u32> {
+        self.select_checked(folder, None)
+    }
+
+    /// 拉取单封邮件原文字节（文件夹须已 SELECT）。
+    /// 用 `BODY.PEEK[]` 而非 `RFC822`，避免读取副作用——不自动打 `\Seen`。
+    pub fn fetch_body(&mut self, uid: u32) -> Result<Vec<u8>> {
         let fetches = self
             .session
             .uid_fetch(uid.to_string(), "(UID BODY.PEEK[])")?;
         let fetch = fetches.iter().next().ok_or(Error::MessageNotFound(uid))?;
         let raw = fetch.body().ok_or(Error::MessageNotFound(uid))?;
-        crate::mime::parse(uid, raw)
+        Ok(raw.to_vec())
     }
 
     /// 给邮件加 flag，如 `\\Seen`、`\\Flagged`。
